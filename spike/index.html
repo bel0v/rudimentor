@@ -1,0 +1,348 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Drum timing probe (throwaway spike)</title>
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; padding: 20px; font: 14px/1.45 system-ui, sans-serif; background: #141518; color: #e6e6e6; max-width: 960px; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  h2 { font-size: 14px; margin: 0 0 8px; color: #9aa; text-transform: uppercase; letter-spacing: .06em; }
+  section { background: #1d1f24; border: 1px solid #2c2f36; border-radius: 8px; padding: 14px 16px; margin: 14px 0; }
+  .row { display: flex; flex-wrap: wrap; gap: 10px 18px; align-items: center; margin: 6px 0; }
+  label { display: inline-flex; gap: 6px; align-items: center; color: #bbb; }
+  input[type=number] { width: 70px; }
+  button { background: #2f6fed; color: #fff; border: 0; border-radius: 6px; padding: 7px 14px; font: inherit; cursor: pointer; }
+  button:disabled { background: #3a3d45; color: #888; cursor: default; }
+  button.secondary { background: #3a3d45; }
+  .muted { color: #888; }
+  .big { font-size: 20px; font-weight: 600; }
+  .ok { color: #5ad27e; } .warn { color: #f0b35a; } .bad { color: #f06a6a; }
+  .meter { height: 8px; background: #2c2f36; border-radius: 4px; width: 220px; overflow: hidden; }
+  .meter > div { height: 100%; width: 0; background: #5ad27e; }
+  table { border-collapse: collapse; width: 100%; font-variant-numeric: tabular-nums; }
+  th, td { text-align: right; padding: 3px 8px; border-bottom: 1px solid #2c2f36; }
+  th { color: #9aa; font-weight: 500; }
+  tr.click td { color: #8fa3c7; } tr.hit td { color: #e6e6e6; font-weight: 500; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(170px, 1fr)); gap: 10px 16px; }
+  .stat .muted { font-size: 12px; }
+  pre { margin: 0; white-space: pre-wrap; color: #aaa; font-size: 12px; }
+  .hist { display: flex; align-items: flex-end; gap: 2px; height: 60px; margin-top: 8px; }
+  .hist > div { flex: 1; background: #2f6fed; min-height: 1px; }
+  .hist > div.center { background: #5ad27e; }
+</style>
+</head>
+<body>
+<h1>Drum timing probe</h1>
+<p class="muted">Throwaway spike. Laptop speakers + built-in mic, no headphones. Use a wired setup only, close other audio apps.</p>
+
+<section>
+  <h2>1 · Audio</h2>
+  <div class="row">
+    <button id="init">Start audio</button>
+    <label>Click <select id="freq"><option>3000</option><option selected>4000</option><option>5000</option><option>6000</option></select> Hz</label>
+    <label>Click volume <input id="gain" type="range" min="0" max="1" step="0.05" value="0.6"></label>
+    <label>Hit threshold <input id="thresh" type="range" min="-50" max="-10" step="1" value="-30"> <span id="threshV">-30</span> dBFS</label>
+  </div>
+  <div class="row">
+    <label>Input <div class="meter"><div id="meter"></div></div> <span id="meterV" class="muted">—</span></label>
+    <label><input id="subtract" type="checkbox" checked> click subtraction</label>
+    <label><input id="notch" type="checkbox" checked> notch at click freq</label>
+  </div>
+  <pre id="info">not started</pre>
+</section>
+
+<section>
+  <h2>2 · Calibrate (stay silent, 16 clicks)</h2>
+  <div class="row"><button id="calib" disabled>Calibrate</button> <span id="calibStatus" class="muted">needs audio</span></div>
+  <div class="grid" id="calibStats" hidden>
+    <div class="stat"><div class="big" id="cDelay">—</div><div class="muted">loopback delay (speaker → mic)</div></div>
+    <div class="stat"><div class="big" id="cJitter">—</div><div class="muted">jitter σ over 16 clicks (the key number)</div></div>
+    <div class="stat"><div class="big" id="cSpread">—</div><div class="muted">min→max spread</div></div>
+    <div class="stat"><div class="big" id="cPeak">—</div><div class="muted">click level at mic</div></div>
+    <div class="stat"><div class="big" id="cSnr">—</div><div class="muted">correlation SNR (want > 20)</div></div>
+  </div>
+  <pre id="calibPer" class="muted"></pre>
+</section>
+
+<section>
+  <h2>3 · Run</h2>
+  <div class="row">
+    <label>BPM <input id="bpm" type="number" value="100" min="30" max="300"></label>
+    <label>Notes per click <select id="subdiv"><option value="1">1</option><option value="2">2</option><option value="3">3</option><option value="4">4</option></select></label>
+    <button id="start" disabled>Start metronome</button>
+    <button id="stop" class="secondary" disabled>Stop</button>
+    <button id="clear" class="secondary">Clear stats</button>
+    <button id="download" class="secondary" disabled>Download recording</button>
+  </div>
+  <p class="muted">Test A: start, don't play — hits must stay at 0. Test B: play along, read the deltas. Negative = early. Starting the metronome resets the stats.</p>
+  <div class="grid">
+    <div class="stat"><div class="big" id="rClicks">0</div><div class="muted">clicks</div></div>
+    <div class="stat"><div class="big" id="rHits">0</div><div class="muted">hits detected (<span id="rHitsIn">0</span> inside a click window)</div></div>
+    <div class="stat"><div class="big" id="rAlign">—</div><div class="muted">click alignment drift vs calibration, mean ± σ (max)</div></div>
+    <div class="stat"><div class="big" id="rResidual">—</div><div class="muted">click residual in hit-free windows, max (cancellation vs raw click)</div></div>
+    <div class="stat"><div class="big" id="rMargin">—</div><div class="muted">separation: mean hit level − residual max</div></div>
+    <div class="stat"><div class="big" id="rMean">—</div><div class="muted">delta mean (grid)</div></div>
+    <div class="stat"><div class="big" id="rStd">—</div><div class="muted">delta σ (grid)</div></div>
+    <div class="stat"><div class="big" id="rMeanBeat">—</div><div class="muted">delta mean, nearest click only</div></div>
+  </div>
+  <div class="hist" id="hist"></div>
+  <div class="muted" style="font-size:12px">histogram of grid deltas, −50…+50 ms, 2 ms bins</div>
+  <table>
+    <thead><tr><th>t (s)</th><th>event</th><th>align (ms)</th><th>residual (dBFS)</th><th>grid line</th><th>Δ grid (ms)</th><th>Δ click (ms)</th><th>level (dBFS)</th></tr></thead>
+    <tbody id="rows"></tbody>
+  </table>
+  <p class="muted" style="font-size:12px">Blue rows are clicks: "align" is where the click was actually found in the mic relative to where calibration says it should be. Residual is what the detector saw inside that click's window after subtraction; "+hit" means a hit landed inside the window, so the residual for that row is not meaningful.</p>
+</section>
+
+<script type="module">
+import { makeClick, analyzeCalibration, locateClick, mean, std, median, dB } from './dsp.js';
+
+const $ = (id) => document.getElementById(id);
+let ctx, node, sr, cal = null, click, clickQ;
+const CAL_COUNT = 16, CAL_PERIOD_MS = 400;
+let segments = [], calibTriggers = 0;
+let run = null;
+
+function sendParams() {
+  node?.port.postMessage({
+    type: 'params',
+    gain: +$('gain').value,
+    subtract: $('subtract').checked,
+    notch: $('notch').checked,
+    absThresh: Math.pow(10, +$('thresh').value / 20),
+    clickFreq: +$('freq').value,
+  });
+}
+for (const id of ['gain', 'subtract', 'notch', 'thresh']) $(id).addEventListener('input', sendParams);
+$('thresh').addEventListener('input', () => ($('threshV').textContent = $('thresh').value));
+$('freq').addEventListener('change', () => { sendParams(); cal = null; $('calibStatus').textContent = 'click changed — recalibrate'; $('start').disabled = true; });
+
+$('init').onclick = async () => {
+  $('init').disabled = true;
+  try {
+    ctx = new AudioContext({ latencyHint: 'interactive' });
+    await ctx.audioWorklet.addModule('./worklet.js');
+    const stream = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: false, noiseSuppression: false, autoGainControl: false, channelCount: 1 }, video: false,
+    });
+    const src = ctx.createMediaStreamSource(stream);
+    node = new AudioWorkletNode(ctx, 'probe', { numberOfInputs: 1, numberOfOutputs: 1, outputChannelCount: [1] });
+    src.connect(node); node.connect(ctx.destination);
+    node.port.onmessage = (ev) => onMsg(ev.data);
+    await ctx.resume();
+    sr = ctx.sampleRate;
+    const s = stream.getAudioTracks()[0].getSettings();
+    $('info').textContent = `sampleRate ${sr} Hz · baseLatency ${(ctx.baseLatency * 1000).toFixed(1)} ms · outputLatency ${((ctx.outputLatency ?? 0) * 1000).toFixed(1)} ms\n` +
+      `mic: ${s.deviceId ? 'ok' : '?'} · echoCancellation ${s.echoCancellation} · noiseSuppression ${s.noiseSuppression} · autoGainControl ${s.autoGainControl} · ${s.sampleRate ?? '?'} Hz`;
+    sendParams();
+    $('calib').disabled = false; $('calibStatus').textContent = 'ready';
+  } catch (e) {
+    $('info').textContent = 'failed: ' + e; $('init').disabled = false;
+  }
+};
+
+$('calib').onclick = () => {
+  segments = []; calibTriggers = 0; cal = null;
+  $('calib').disabled = true; $('start').disabled = true;
+  $('calibStatus').textContent = 'listening… stay silent';
+  node.port.postMessage({ type: 'calibrate', count: CAL_COUNT, periodMs: CAL_PERIOD_MS });
+};
+
+function finishCalibration() {
+  const engineLike = { maxD: Math.round(sr * 0.15), L: Math.round(sr * 0.12), pre: Math.round(sr * 0.002) };
+  const f = +$('freq').value;
+  click = makeClick(sr, f, 0); clickQ = makeClick(sr, f, Math.PI / 2);
+  cal = analyzeCalibration(segments, sr, click, clickQ, engineLike);
+  cal.refMs = median(cal.perClickMs);
+  node.port.postMessage({ type: 'template', template: cal.template, start: cal.start });
+  node.port.postMessage({ type: 'stop' });
+  $('calibStats').hidden = false;
+  $('cDelay').textContent = cal.delayMs.toFixed(2) + ' ms';
+  const j = $('cJitter'); j.textContent = cal.jitterMs.toFixed(3) + ' ms';
+  j.className = 'big ' + (cal.jitterMs < 1 ? 'ok' : cal.jitterMs < 3 ? 'warn' : 'bad');
+  $('cSpread').textContent = cal.spreadMs.toFixed(3) + ' ms';
+  $('cPeak').textContent = dB(cal.clickPeak).toFixed(1) + ' dBFS';
+  const s = $('cSnr'); s.textContent = cal.snr.toFixed(1); s.className = 'big ' + (cal.snr > 20 ? 'ok' : 'bad');
+  $('calibPer').textContent = 'per-click arrival (ms): ' + cal.perClickMs.map((x) => x.toFixed(3)).join('  ') +
+    `\ndetector triggered on the raw click ${calibTriggers}/${CAL_COUNT} times (subtraction is off during calibration — that is the problem we are solving)`;
+  $('calibStatus').textContent = cal.snr > 20 ? 'done' : 'done, but the click is barely audible to the mic — raise volume and recalibrate';
+  $('calib').disabled = false; $('start').disabled = false;
+}
+
+function newRun() {
+  return { t0: null, clicks: new Map(), hits: [], period: Math.round((sr * 60) / +$('bpm').value), subdiv: +$('subdiv').value };
+}
+let recChunks = [];
+$('start').onclick = () => {
+  run = newRun();
+  recChunks = [];
+  node.port.postMessage({ type: 'record', on: true });
+  node.port.postMessage({ type: 'start', bpm: +$('bpm').value });
+  $('start').disabled = true; $('stop').disabled = false; $('calib').disabled = true; $('download').disabled = true;
+  render();
+};
+$('stop').onclick = () => {
+  node.port.postMessage({ type: 'stop' });
+  node.port.postMessage({ type: 'record', on: false });
+  $('start').disabled = false; $('stop').disabled = true; $('calib').disabled = false;
+  setTimeout(() => ($('download').disabled = !recChunks.length), 300);
+};
+
+// stereo 16-bit WAV: left = raw mic, right = residual the detector saw; plus a JSON sidecar
+function wavBlob(chunks) {
+  const total = chunks.reduce((s, c) => s + c.raw.length, 0);
+  const buf = new ArrayBuffer(44 + total * 4);
+  const v = new DataView(buf);
+  const str = (o, s) => { for (let i = 0; i < s.length; i++) v.setUint8(o + i, s.charCodeAt(i)); };
+  str(0, 'RIFF'); v.setUint32(4, 36 + total * 4, true); str(8, 'WAVE'); str(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 2, true);
+  v.setUint32(24, sr, true); v.setUint32(28, sr * 4, true); v.setUint16(32, 4, true); v.setUint16(34, 16, true);
+  str(36, 'data'); v.setUint32(40, total * 4, true);
+  let o = 44;
+  const s16 = (x) => Math.max(-32768, Math.min(32767, Math.round(x * 32767)));
+  for (const c of chunks) for (let i = 0; i < c.raw.length; i++) { v.setInt16(o, s16(c.raw[i]), true); v.setInt16(o + 2, s16(c.res[i]), true); o += 4; }
+  return new Blob([buf], { type: 'audio/wav' });
+}
+$('download').onclick = () => {
+  if (!recChunks.length || !run) return;
+  const stamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
+  const meta = {
+    sr, recStart: recChunks[0].n0, bpm: +$('bpm').value, subdiv: run.subdiv,
+    clickFreq: +$('freq').value, gain: +$('gain').value, threshDb: +$('thresh').value,
+    subtract: $('subtract').checked, notch: $('notch').checked,
+    cal: { D: cal.D, start: cal.start, refMs: cal.refMs, clickPeak: cal.clickPeak, jitterMs: cal.jitterMs, template: Array.from(cal.template) },
+    clicks: [...run.clicks.values()].map((c) => ({ e: c.e, alignMs: c.alignMs, residual: c.residual, hitInside: c.hitInside })),
+    hits: run.hits,
+  };
+  const dl = (blob, name) => { const a = document.createElement('a'); a.href = URL.createObjectURL(blob); a.download = name; a.click(); setTimeout(() => URL.revokeObjectURL(a.href), 5000); };
+  dl(wavBlob(recChunks), `run-${stamp}.wav`);
+  dl(new Blob([JSON.stringify(meta)], { type: 'application/json' }), `run-${stamp}.json`);
+};
+$('clear').onclick = () => { if (run) run = Object.assign(newRun(), { t0: run.t0 }); render(); };
+
+const arrivals = () => [...run.clicks.keys()].map((e) => e + cal.D);
+
+function onMsg(m) {
+  switch (m.type) {
+    case 'meter': {
+      const d = dB(m.peak);
+      $('meter').style.width = Math.max(0, Math.min(100, ((d + 60) / 60) * 100)) + '%';
+      $('meterV').textContent = isFinite(d) ? d.toFixed(0) + ' dBFS' : '—';
+      break;
+    }
+    case 'rec':
+      recChunks.push(m);
+      break;
+    case 'segment':
+      segments.push(m.data);
+      $('calibStatus').textContent = `listening… ${segments.length}/${CAL_COUNT}`;
+      if (segments.length === CAL_COUNT) finishCalibration();
+      break;
+    case 'click':
+      if (run && m.mode === 'run') { if (run.t0 == null) run.t0 = m.e; run.clicks.set(m.e, { e: m.e }); render(); }
+      break;
+    case 'arrival': {
+      const c = run?.clicks.get(m.e);
+      if (!c || !cal) break;
+      const pad = Math.round(sr * 0.004);
+      const loc = locateClick(m.data, click, clickQ, 2 * pad);
+      c.alignMs = ((m.from + loc.refined) / sr) * 1000 - ((m.e / sr) * 1000 + cal.refMs);
+      c.alignSnr = loc.snr;
+      render();
+      break;
+    }
+    case 'residual': {
+      const c = run?.clicks.get(m.e);
+      if (!c) break;
+      c.residual = m.peak; c.hitInside = m.hit;
+      render();
+      break;
+    }
+    case 'hit':
+      if (m.mode === 'calib') calibTriggers++;
+      else if (run && m.mode === 'run' && cal) {
+        const arr = arrivals();
+        if (!arr.length) break;
+        const nearest = arr.reduce((a, b) => (Math.abs(b - m.sample) < Math.abs(a - m.sample) ? b : a));
+        const step = run.period / run.subdiv;
+        const k = Math.round((m.sample - nearest) / step);
+        const dGrid = ((m.sample - (nearest + k * step)) / sr) * 1000;
+        const dClick = ((m.sample - nearest) / sr) * 1000;
+        const line = ((k % run.subdiv) + run.subdiv) % run.subdiv;
+        run.hits.push({ sample: m.sample, dGrid, dClick, line, peak: m.peak });
+        render();
+      }
+      break;
+  }
+}
+
+function render() {
+  if (!run) return;
+  const clicks = [...run.clicks.values()];
+  $('rClicks').textContent = clicks.length;
+  $('rHits').textContent = run.hits.length;
+  $('rHitsIn').textContent = clicks.filter((c) => c.hitInside).length;
+  const al = clicks.filter((c) => c.alignMs != null && c.residual != null && !c.hitInside).map((c) => c.alignMs);
+  if (al.length) {
+    const mx = Math.max(...al.map(Math.abs));
+    const el = $('rAlign'); el.textContent = `${mean(al).toFixed(3)} ± ${std(al).toFixed(3)} ms (${mx.toFixed(3)})`;
+    el.className = 'big ' + (mx < 0.05 ? 'ok' : mx < 0.5 ? 'warn' : 'bad');
+  }
+  const free = clicks.filter((c) => c.residual != null && !c.hitInside).map((c) => c.residual);
+  let resMax = null;
+  if (free.length && cal) {
+    resMax = Math.max(...free);
+    const canc = dB(cal.clickPeak) - dB(resMax);
+    const el = $('rResidual');
+    el.textContent = `${dB(resMax).toFixed(1)} dBFS (${canc >= 0 ? '−' : '+'}${Math.abs(canc).toFixed(1)} dB, n=${free.length})`;
+    el.className = 'big ' + (canc > 20 ? 'ok' : canc > 6 ? 'warn' : 'bad');
+  }
+  if (resMax != null && run.hits.length) {
+    const margin = dB(mean(run.hits.map((h) => h.peak))) - dB(resMax);
+    const el = $('rMargin'); el.textContent = margin.toFixed(1) + ' dB';
+    el.className = 'big ' + (margin > 20 ? 'ok' : margin > 10 ? 'warn' : 'bad');
+  }
+  const dg = run.hits.map((h) => h.dGrid), dc = run.hits.map((h) => h.dClick);
+  $('rMean').textContent = dg.length ? mean(dg).toFixed(1) + ' ms' : '—';
+  $('rStd').textContent = dg.length > 1 ? std(dg).toFixed(1) + ' ms' : '—';
+  $('rMeanBeat').textContent = dc.length ? mean(dc).toFixed(1) + ' ms' : '—';
+  const bins = new Array(50).fill(0);
+  for (const d of dg) { const b = Math.floor((d + 50) / 2); if (b >= 0 && b < 50) bins[b]++; }
+  const mxb = Math.max(1, ...bins);
+  $('hist').innerHTML = bins.map((b, i) => `<div class="${i === 25 || i === 24 ? 'center' : ''}" style="height:${(b / mxb) * 100}%"></div>`).join('');
+
+  // timeline: clicks and hits interleaved, newest first
+  const t = (s) => ((s - run.t0) / sr).toFixed(3);
+  const ev = [
+    ...clicks.map((c) => ({ s: c.e + (cal?.D ?? 0), c })),
+    ...run.hits.map((h) => ({ s: h.sample, h })),
+  ].sort((a, b) => b.s - a.s).slice(0, 48);
+  $('rows').innerHTML = ev.map((x) => x.c
+    ? `<tr class="click"><td>${t(x.s)}</td><td>click</td><td>${x.c.alignMs != null ? x.c.alignMs.toFixed(3) : '…'}</td><td>${x.c.residual != null ? dB(x.c.residual).toFixed(1) + (x.c.hitInside ? ' +hit' : '') : '…'}</td><td></td><td></td><td></td><td></td></tr>`
+    : `<tr class="hit"><td>${t(x.s)}</td><td>hit</td><td></td><td></td><td>${x.h.line === 0 ? 'click' : `+${x.h.line}/${run.subdiv}`}</td><td>${x.h.dGrid.toFixed(1)}</td><td>${x.h.dClick.toFixed(1)}</td><td>${dB(x.h.peak).toFixed(1)}</td></tr>`
+  ).join('');
+}
+
+// headless smoke test: ?auto=1 runs init → calibrate → 8 clicks and logs a summary
+if (new URLSearchParams(location.search).get('auto')) {
+  (async () => {
+    const wait = (ms) => new Promise((r) => setTimeout(r, ms));
+    console.log('AUTO init');
+    await $('init').onclick();
+    console.log('AUTO ' + $('info').textContent.replace(/\n/g, ' | '));
+    if (!node) return console.log('AUTO_FAIL ' + $('info').textContent);
+    $('calib').onclick();
+    let last = -1;
+    while (!cal) { await wait(100); if (segments.length !== last) console.log('AUTO segments ' + (last = segments.length)); }
+    $('start').onclick();
+    await wait((60000 / +$('bpm').value) * 8 + 500);
+    $('stop').onclick();
+    const clicks = [...run.clicks.values()];
+    console.log('AUTO_RESULT ' + JSON.stringify({ sr, delayMs: cal.delayMs, jitterMs: cal.jitterMs, snr: cal.snr, clicks: clicks.length, aligned: clicks.filter((c) => c.alignMs != null).length, residuals: clicks.filter((c) => c.residual != null).length, hits: run.hits.length }));
+  })();
+}
+</script>
+</body>
+</html>

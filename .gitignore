@@ -1,0 +1,5 @@
+node_modules/
+dist/
+.DS_Store
+# local recordings from the spike debug export (large, machine-specific)
+spike/recordings/
